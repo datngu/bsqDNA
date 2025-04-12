@@ -93,7 +93,7 @@ class PatchifyLinear(nn.Module):
         return x.permute(0, 2, 1)
 
 
-class UnPatchifyLinear(nn.Module):
+class UnpatchifyLinear(nn.Module):
     """
     Reverses the patchification of DNA embeddings back to original encoding using linear projection
     
