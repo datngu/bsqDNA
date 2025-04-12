@@ -4,4 +4,10 @@
 *.fasta.gz
 *.fasta.gz.fai
 *.fasta.gz.fai.gz
-*.fasta.gz.fai.gz.gz
+*.npz
+*.fa.fai
+
+
+/data
+/test_data
+
