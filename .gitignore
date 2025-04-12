@@ -1,0 +1,7 @@
+*.gz
+*.fa
+*.fasta
+*.fasta.gz
+*.fasta.gz.fai
+*.fasta.gz.fai.gz
+*.fasta.gz.fai.gz.gz
