@@ -28,7 +28,7 @@ def one_hot_encode(sequences):
     
     return one_hot
 
-def load_and_check_test_data(data_dir='./test_data', file_pattern='*.npz', max_samples=5, convert_to_tensor=True):
+def load_and_check_data(data_dir='./data', file_pattern='*.npz', max_samples=5, convert_to_tensor=True):
     """
     Load test data, show its dimensions, and optionally convert to PyTorch tensor
     
@@ -91,4 +91,4 @@ def load_and_check_test_data(data_dir='./test_data', file_pattern='*.npz', max_s
                 print("  Not a DNA sequence array, skipping one-hot encoding.")
 
 if __name__ == "__main__":
-    load_and_check_test_data() 
+    load_and_check_data() 

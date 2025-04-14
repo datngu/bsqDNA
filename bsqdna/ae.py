@@ -2,37 +2,39 @@ import abc
 
 import torch
 import torch.nn as nn
-from utils import PatchifyLinear, UnpatchifyLinear
-
-def load() -> torch.nn.Module:
-    from pathlib import Path
-
-    model_name = "PatchAutoEncoder"
-    model_path = Path(__file__).parent / f"{model_name}.pth"
-    print(f"Loading {model_name} from {model_path}")
-    return torch.load(model_path, weights_only=False)
+from .utils import PatchifyLinear, UnpatchifyLinear
 
 
 class PatchAutoEncoderBase(abc.ABC):
     @abc.abstractmethod
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Encode an input image x (B, H, W, 3) into a tensor (B, h, w, bottleneck),
-        where h = H // patch_size, w = W // patch_size and bottleneck is the size of the
-        AutoEncoders bottleneck.
+        Encode an input DNA sequence tensor x (B, 4, L) into a tensor (B, L//patch_size, bottleneck),
+        where:
+        - B is the batch size
+        - 4 represents one-hot encoded nucleotides (A, C, G, T)
+        - L is the sequence length (4096)
+        - patch_size is the number of nucleotides per token
+        - bottleneck is the size of the AutoEncoder's bottleneck
         """
 
     @abc.abstractmethod
     def decode(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Decode a tensor x (B, h, w, bottleneck) into an image (B, H, W, 3),
+        Decode a tensor x (B, L//patch_size, bottleneck) into a DNA sequence tensor (B, 4, L).
         We will train the auto-encoder such that decode(encode(x)) ~= x.
         """
 
 
 class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
     """
-    Implement a PatchLevel AutoEncoder
+    Implement a PatchLevel AutoEncoder for DNA sequences
+
+    The model processes DNA sequences in patches, where each patch contains a fixed number
+    of nucleotides. The input sequences are one-hot encoded with shape (B, 4, L) where:
+    - B is the batch size
+    - 4 represents one-hot encoded nucleotides (A, C, G, T)
+    - L is the sequence length (4096)
 
     Hint: Convolutions work well enough, no need to use a transformer unless you really want.
     Hint: See PatchifyLinear and UnpatchifyLinear for how to use convolutions with the input and
@@ -44,8 +46,8 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
     """
     class PatchEncoder(torch.nn.Module):
         """
-        (Optionally) Use this class to implement an encoder.
-                     It can make later parts of the homework easier (reusable components).
+        (Optionally) Use this class to implement an encoder for DNA sequences.
+        It can make later parts of the homework easier (reusable components).
         """
 
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
@@ -56,6 +58,9 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             return self.patchify(x)
 
     class PatchDecoder(torch.nn.Module):
+        """
+        Decoder module that reconstructs DNA sequences from their latent representation
+        """
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
             super().__init__()
             self.unpatchify = UnpatchifyLinear(patch_size, latent_dim)
@@ -70,8 +75,9 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
-        Return the reconstructed image and a dictionary of additional loss terms you would like to
-        minimize (or even just visualize).
+        Process a batch of DNA sequences through the autoencoder.
+        Input shape: (B, 4, L) where B is batch size, 4 is one-hot encoded nucleotides, L is sequence length
+        Returns the reconstructed sequences and a dictionary of additional loss terms.
         You can return an empty dictionary if you don't have any additional terms.
         """
         x = self.patch_encoder(x)

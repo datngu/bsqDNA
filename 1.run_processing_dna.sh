@@ -7,5 +7,5 @@ do
     python bin/process_genome.py \
         --genome Homo_sapiens.GRCh38.dna.primary_assembly.fa \
         --chroms $i \
-        --out test_data 
+        --out data 
 done

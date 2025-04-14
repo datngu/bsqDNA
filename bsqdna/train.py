@@ -4,18 +4,13 @@ from pathlib import Path
 
 import torch
 
-from . import bsq
-
-patch_models = {
-    n: m for n, m in inspect.getmembers(bsq) if inspect.isclass(m) and issubclass(m, torch.nn.Module)
-}
+from .bsq import BSQDNA
+from .data import DNADataset
 
 
-def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
+def train(epochs: int = 5, batch_size: int = 64):
     import lightning as L
     from lightning.pytorch.loggers import TensorBoardLogger
-
-    from .data import ImageDataset
 
     class PatchTrainer(L.LightningModule):
         def __init__(self, model):
@@ -23,8 +18,6 @@ def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
             self.model = model
 
         def training_step(self, x, batch_idx):
-            x = x.float() / 255.0 - 0.5
-
             x_hat, additional_losses = self.model(x)
             loss = torch.nn.functional.mse_loss(x_hat, x)
             self.log("train/loss", loss, prog_bar=True)
@@ -33,8 +26,6 @@ def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
             return loss + sum(additional_losses.values())
 
         def validation_step(self, x, batch_idx):
-            x = x.float() / 255.0 - 0.5
-
             with torch.no_grad():
                 x_hat, additional_losses = self.model(x)
                 loss = torch.nn.functional.mse_loss(x_hat, x)
@@ -42,11 +33,10 @@ def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
             for k, v in additional_losses.items():
                 self.log(f"validation/{k}", v)
             if batch_idx == 0:
-                self.logger.experiment.add_images(
-                    "input", (x[:64] + 0.5).clamp(min=0, max=1).permute(0, 3, 1, 2), self.global_step
-                )
-                self.logger.experiment.add_images(
-                    "prediction", (x_hat[:64] + 0.5).clamp(min=0, max=1).permute(0, 3, 1, 2), self.global_step
+                self.logger.experiment.add_text(
+                    "sample_reconstruction",
+                    f"Original vs Reconstructed (first 50 bases):\n{x[0,:,:50]}\n{x_hat[0,:,:50]}",
+                    self.global_step
                 )
             return loss
 
@@ -54,11 +44,11 @@ def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
             return torch.optim.AdamW(self.parameters(), lr=1e-3)
 
         def train_dataloader(self):
-            dataset = ImageDataset("train")
+            dataset = DNADataset("data", "train")
             return torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=True)
 
         def val_dataloader(self):
-            dataset = ImageDataset("valid")
+            dataset = DNADataset("data", "valid")
             return torch.utils.data.DataLoader(dataset, batch_size=4096, num_workers=4, shuffle=True)
 
     class CheckPointer(L.Callback):
@@ -68,16 +58,9 @@ def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
             torch.save(model, fn)
             torch.save(model, Path(__file__).parent / f"{model_name}.pth")
 
-    # Load or create the model
-    if Path(model_name_or_path).exists():
-        model = torch.load(model_name_or_path, weights_only=False)
-        model_name = model.__class__.__name__
-    else:
-        model_name = model_name_or_path
-        if model_name in patch_models:
-            model = patch_models[model_name]()
-        else:
-            raise ValueError(f"Unknown model: {model_name}")
+    # Create the model
+    model_name = "BSQDNA"
+    model = BSQDNA()
 
     # Create the lightning model
     l_model = PatchTrainer(model)

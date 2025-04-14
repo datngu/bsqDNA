@@ -1,7 +1,7 @@
-from tokenizer import Tokenizer
+from .tokenizer import Tokenizer
 import torch
-from ae import PatchAutoEncoder
-
+import torch.nn.functional as F
+from .ae import PatchAutoEncoder
 
 def diff_sign(x: torch.Tensor) -> torch.Tensor:
     """
@@ -77,7 +77,7 @@ ARCHITECTURE:
     3. BSQ.decode: Project binary values back to latent dimension
     4. PatchDecoder: Reconstruct original image
 """
-class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
+class BSQDNA(PatchAutoEncoder, Tokenizer):
     """
     Combine your PatchAutoEncoder with BSQ to form a Tokenizer.
 
