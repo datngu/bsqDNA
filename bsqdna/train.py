@@ -9,13 +9,12 @@ import torch
 torch.set_float32_matmul_precision('medium')
 
 from .bsq import BSQDNA
-from .encoded_data import create_encoded_dataloader
+from .data import create_dataloader
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
 
-def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, 
-          encoded_dir: str = "data_encoded"):
+def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, data_dir: str = "test_data"):
     import lightning as L
     from lightning.pytorch.loggers import TensorBoardLogger
     import logging
@@ -29,9 +28,9 @@ def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024,
         def __init__(self, model):
             super().__init__()
             self.model = model
-            self.encoded_dir = encoded_dir
+            self.data_dir = data_dir
             logger.info("Initialized PatchTrainer")
-            logger.info(f"Using pre-encoded data")
+            logger.info(f"Using DNA data from {data_dir}")
 
         def training_step(self, batch, batch_idx):            
             x, _ = batch
@@ -67,18 +66,19 @@ def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024,
 
         def train_dataloader(self):
             logger.info("Setting up training dataloader")
-            return create_encoded_dataloader(
-                self.encoded_dir, "train", 
+            return create_dataloader(
+                self.data_dir, "train", 
                 batch_size=batch_size, 
-                num_workers=16
+                num_workers=4,
+                shuffle=True
             )
 
         def val_dataloader(self):
             logger.info("Setting up validation dataloader")
-            return create_encoded_dataloader(
-                self.encoded_dir, "valid", 
+            return create_dataloader(
+                self.data_dir, "valid", 
                 batch_size=val_batch_size, 
-                num_workers=16, 
+                num_workers=4, 
                 shuffle=False
             )
 
