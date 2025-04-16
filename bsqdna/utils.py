@@ -28,6 +28,12 @@ class DNAOneHotEncoder:
         Returns:
             np.ndarray: Shape (4, len(dna_arr)) one-hot array or (len(dna_arr),) integer array
         """
+        # Convert bytes to numpy array if needed
+        if isinstance(dna_arr, bytes):
+            dna_arr = np.array([c for c in dna_arr], dtype='S1')
+        elif isinstance(dna_arr, list):
+            dna_arr = np.array(dna_arr, dtype='S1')
+            
         # Ensure input is 2D for broadcasting
         dna_arr = dna_arr[None, :] if dna_arr.ndim == 1 else dna_arr
         
@@ -39,6 +45,105 @@ class DNAOneHotEncoder:
         return onehot
 
 
+class GPUOneHotEncoder(nn.Module):
+    """
+    GPU-accelerated one-hot encoder for DNA sequences
+    
+    This encoder runs on GPU for faster processing when handling large batches.
+    It can work with string data, raw bytes, or numpy arrays.
+    
+    Attributes:
+        nucleotide_map: Dictionary mapping nucleotides to indices
+    
+    Methods:
+        forward: Main encoding method that runs on GPU
+        encode: Similar interface to DNAOneHotEncoder but returns torch.Tensor
+    """
+    
+    def __init__(self, device=None):
+        super().__init__()
+        self.nucleotide_map = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+    def forward(self, sequences):
+        """
+        Encode DNA sequences directly on GPU/CPU
+        
+        Args:
+            sequences: List of strings, bytes or torch.Tensor of indices
+            
+        Returns:
+            torch.Tensor: One-hot encoded tensor on device (batch_size, 4, seq_length)
+        """
+        # Convert inputs to tensor of indices
+        if isinstance(sequences, list):
+            if isinstance(sequences[0], (str, bytes)):
+                # Process list of strings/bytes
+                indices = []
+                for seq in sequences:
+                    if isinstance(seq, bytes):
+                        seq = seq.decode('utf-8')
+                    seq_indices = torch.tensor([self.nucleotide_map.get(nuc, 0) for nuc in seq], 
+                                              device=self.device)
+                    indices.append(seq_indices)
+                indices = torch.stack(indices).to(self.device)
+            else:
+                # List of tensors or numpy arrays
+                indices = torch.stack([torch.tensor(seq, device=self.device) for seq in sequences])
+        elif isinstance(sequences, np.ndarray):
+            # Already numpy array - convert to appropriate format
+            if sequences.dtype == np.dtype('S1') or sequences.dtype == np.dtype('|S1'):
+                # Convert bytes to chars first
+                char_array = np.array([[c.decode('utf-8') for c in seq] for seq in sequences])
+                # Then map to indices
+                idx_array = np.array([[self.nucleotide_map.get(c, 0) for c in seq] for seq in char_array])
+                indices = torch.from_numpy(idx_array).to(self.device)
+            else:
+                # Already numeric, just convert
+                indices = torch.from_numpy(sequences).to(self.device)
+        elif isinstance(sequences, torch.Tensor):
+            # Already a tensor, just ensure it's on the right device
+            indices = sequences.to(self.device)
+        else:
+            raise ValueError(f"Unsupported input type: {type(sequences)}")
+            
+        # Create one-hot encoding
+        batch_size, seq_length = indices.shape
+        one_hot = torch.zeros(batch_size, 4, seq_length, device=self.device)
+        
+        # Efficiently create one-hot encoding
+        for i in range(4):  # For each nucleotide
+            one_hot[:, i, :] = (indices == i)
+        
+        return one_hot
+        
+    def encode(self, dna_arr, out_int=False):
+        """
+        Compatibility method with similar interface to DNAOneHotEncoder.encode
+        
+        Args:
+            dna_arr: Input DNA sequence(s) as numpy array, list, or tensor
+            out_int: Return integer indices instead of one-hot vectors
+            
+        Returns:
+            torch.Tensor: One-hot encoded tensor (or indices if out_int=True)
+        """
+        # Convert single sequence to batch of 1 if needed
+        is_single = False
+        if isinstance(dna_arr, bytes) or (isinstance(dna_arr, np.ndarray) and dna_arr.ndim == 1):
+            dna_arr = [dna_arr]
+            is_single = True
+            
+        # Get one-hot encoding
+        one_hot = self.forward(dna_arr)
+        
+        # Convert to indices if requested
+        if out_int:
+            indices = torch.argmax(one_hot, dim=1)
+            return indices[0] if is_single else indices
+            
+        # Return result, removing batch dimension if input was a single sequence
+        return one_hot[0] if is_single else one_hot
 
 
 class PatchifyLinear(nn.Module):

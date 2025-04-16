@@ -1,19 +1,25 @@
 import inspect
 from datetime import datetime
 from pathlib import Path
+import time
 
 import torch
 
+# Enable Tensor Core operations for better performance on CUDA devices
+torch.set_float32_matmul_precision('medium')
+
 from .bsq import BSQDNA
-from .data import DNADataset
+from .encoded_data import create_encoded_dataloader
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
 
-def train(epochs: int = 5, batch_size: int = 32, val_batch_size: int = 64):
+def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, 
+          encoded_dir: str = "data_encoded"):
     import lightning as L
     from lightning.pytorch.loggers import TensorBoardLogger
     import logging
+    from lightning.pytorch.profilers import PyTorchProfiler
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -23,19 +29,24 @@ def train(epochs: int = 5, batch_size: int = 32, val_batch_size: int = 64):
         def __init__(self, model):
             super().__init__()
             self.model = model
+            self.encoded_dir = encoded_dir
             logger.info("Initialized PatchTrainer")
+            logger.info(f"Using pre-encoded data")
 
-        def training_step(self, x, batch_idx):
-            logger.info(f"Starting training step {batch_idx}")
+        def training_step(self, batch, batch_idx):            
+            x, _ = batch
+            
             x_hat, additional_losses = self.model(x)
             loss = torch.nn.functional.cross_entropy(x_hat, x)
+            
             self.log("train/loss", loss, prog_bar=True)
             for k, v in additional_losses.items():
                 self.log(f"train/{k}", v)
             return loss + sum(additional_losses.values())
 
-        def validation_step(self, x, batch_idx):
+        def validation_step(self, batch, batch_idx):
             logger.info(f"Starting validation step {batch_idx}")
+            x, _ = batch
             with torch.no_grad():
                 x_hat, additional_losses = self.model(x)
                 loss = torch.nn.functional.cross_entropy(x_hat, x)
@@ -52,28 +63,23 @@ def train(epochs: int = 5, batch_size: int = 32, val_batch_size: int = 64):
 
         def configure_optimizers(self):
             logger.info("Configuring optimizers")
-            return torch.optim.AdamW(self.parameters(), lr=1e-3)
+            return torch.optim.AdamW(self.parameters(), lr=2e-3)
 
         def train_dataloader(self):
             logger.info("Setting up training dataloader")
-            dataset = DNADataset("test_data", "train")
-            return torch.utils.data.DataLoader(
-                dataset, 
+            return create_encoded_dataloader(
+                self.encoded_dir, "train", 
                 batch_size=batch_size, 
-                num_workers=0,  # Set to 0 for MPS compatibility
-                shuffle=True,
-                pin_memory=True
+                num_workers=16
             )
 
         def val_dataloader(self):
             logger.info("Setting up validation dataloader")
-            dataset = DNADataset("test_data", "valid")
-            return torch.utils.data.DataLoader(
-                dataset, 
+            return create_encoded_dataloader(
+                self.encoded_dir, "valid", 
                 batch_size=val_batch_size, 
-                num_workers=0,  # Set to 0 for MPS compatibility
-                shuffle=True,
-                pin_memory=True
+                num_workers=16, 
+                shuffle=False
             )
 
     class CheckPointer(L.Callback):
@@ -96,16 +102,34 @@ def train(epochs: int = 5, batch_size: int = 32, val_batch_size: int = 64):
     logger.info("Setting up TensorBoard logger")
     tb_logger = TensorBoardLogger("logs", name=f"{timestamp}_{model_name}")
     
+    # Create the profiler
+    profiler = PyTorchProfiler(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        schedule=torch.profiler.schedule(
+            wait=1,
+            warmup=1,
+            active=3,
+            repeat=1
+        ),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(f"logs/profiler"),
+        record_shapes=True,
+        profile_memory=True,
+    )
+
     logger.info("Creating trainer")
     trainer = L.Trainer(
         max_epochs=epochs, 
         logger=tb_logger, 
         callbacks=[CheckPointer()],
-        accelerator=DEVICE,  # Explicitly set accelerator to MPS
+        accelerator=DEVICE,
         devices=1,
-        num_sanity_val_steps=1,  # Reduce sanity check steps
-        limit_val_batches=1,  # Limit validation batches during sanity check
-        limit_train_batches=1  # Limit training batches during sanity check
+        num_sanity_val_steps=2,
+        deterministic=False,
+        gradient_clip_val=1.0,
+        profiler=profiler,
     )
     
     try:
