@@ -2,7 +2,7 @@ import abc
 
 import torch
 import torch.nn as nn
-from .utils import PatchifyLinear, UnpatchifyLinear
+from .utils import PatchifyLinear, UnpatchifyLinear, PatchifyAttention, UnpatchifyAttention
 
 
 class PatchAutoEncoderBase(abc.ABC):
@@ -35,24 +35,15 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
     - B is the batch size
     - 4 represents one-hot encoded nucleotides (A, C, G, T)
     - L is the sequence length (4096)
-
-    Hint: Convolutions work well enough, no need to use a transformer unless you really want.
-    Hint: See PatchifyLinear and UnpatchifyLinear for how to use convolutions with the input and
-          output dimensions given.
-    Hint: You can get away with 3 layers or less.
-    Hint: Many architectures work here (even a just PatchifyLinear / UnpatchifyLinear).
-          However, later parts of the assignment require both non-linearities (i.e. GeLU) and
-          interactions (i.e. convolutions) between patches.
     """
     class PatchEncoder(torch.nn.Module):
         """
         (Optionally) Use this class to implement an encoder for DNA sequences.
-        It can make later parts of the homework easier (reusable components).
         """
 
-        def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
+        def __init__(self, patch_size: int, latent_dim: int):
             super().__init__()
-            self.patchify = PatchifyLinear(patch_size, latent_dim)
+            self.patchify = PatchifyAttention(patch_size, latent_dim)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.patchify(x)
@@ -61,17 +52,17 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
         """
         Decoder module that reconstructs DNA sequences from their latent representation
         """
-        def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
+        def __init__(self, patch_size: int, latent_dim: int):
             super().__init__()
-            self.unpatchify = UnpatchifyLinear(patch_size, latent_dim)
+            self.unpatchify = UnpatchifyAttention(patch_size, latent_dim)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.unpatchify(x)
 
-    def __init__(self, patch_size: int = 5, latent_dim: int = 128, bottleneck: int = 128):
+    def __init__(self, patch_size: int = 8, latent_dim: int = 128):
         super().__init__()
-        self.patch_encoder = self.PatchEncoder(patch_size, latent_dim, bottleneck)
-        self.patch_decoder = self.PatchDecoder(patch_size, latent_dim, bottleneck)
+        self.patch_encoder = self.PatchEncoder(patch_size, latent_dim)
+        self.patch_decoder = self.PatchDecoder(patch_size, latent_dim)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
