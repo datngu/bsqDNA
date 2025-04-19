@@ -7,7 +7,56 @@
 *.npz
 *.fa.fai
 
-
+/__pycache__
 /data
 /test_data
 /data_encoded
+/data_h5
+/test_data_h5
+/checkpoints
+/logs
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+wandb/
+
+# Checkpoints
+checkpoints/
+*.pth
+*.pt
+*.ckpt

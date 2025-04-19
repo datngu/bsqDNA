@@ -8,11 +8,11 @@ from pathlib import Path
 from .utils import DNAOneHotEncoder
 import logging
 import re
-import time
+import h5py
 
 logger = logging.getLogger(__name__)
 
-def dna_collate_fn(batch):
+def collate_fn(batch):
     """
     Custom collate function for DNA sequences to ensure proper batching
     
@@ -33,56 +33,62 @@ def dna_collate_fn(batch):
 def create_dataloader(data_dir: str, split: str = "train", batch_size: int = 32, 
                      num_workers: int = 4, shuffle: bool = True) -> DataLoader:
     """
-    Create a DataLoader for DNA sequences with the correct collate function
+    Create a DataLoader for DNA sequences with optimized I/O handling
     
     Args:
-        data_dir: Root directory containing .npz files
+        data_dir: Root directory containing .h5 files
         split: One of 'train', 'valid', or 'test'
         batch_size: Batch size for training
-        num_workers: Number of worker processes for data loading
+        num_workers: Number of worker processes for data loading. 
+                    Set to 0 for single-process loading.
+                    Recommended: 4 * number of GPUs
         shuffle: Whether to shuffle the data
         
     Returns:
         DataLoader: PyTorch DataLoader with custom collate function
     """
     dataset = DNADataset(data_dir, split)
+    
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        collate_fn=dna_collate_fn,
-        pin_memory=False
+        collate_fn=collate_fn,
+        pin_memory=True,  # Faster GPU transfer
+        persistent_workers=True,  # Keep workers alive between epochs
+        prefetch_factor=2  # Number of batches to prefetch per worker
     )
 
 class DNADataset(Dataset):
     """
-    Dataset for loading DNA sequences from .npz files
+    Dataset for loading DNA sequences from HDF5 files with memory mapping
     """
     def __init__(self, data_dir: str, split: str = "train"):
         """
         Args:
-            data_dir: Root directory containing .npz files
+            data_dir: Root directory containing .h5 files
             split: One of 'train', 'valid', or 'test'
         """
-        logger.info(f"Initializing DNADataset with data_dir={data_dir}, split={split}")
         self.data_dir = Path(data_dir)
-        self.files = sorted(glob.glob(str(self.data_dir / "*.npz")), 
+        self.files = sorted(glob.glob(str(self.data_dir / "*.h5")), 
                            key=lambda f: [int(s) if s.isdigit() else s.lower() 
                                         for s in re.split(r'(\d+)', os.path.basename(f))])
-        logger.info(f"Found {len(self.files)} .npz files in {data_dir}")
-        
         self.encoder = DNAOneHotEncoder()
+        self.h5_files = {}
+        self.file_index = []
+
+        # Open all HDF5 files
+        for file in self.files:
+            self.h5_files[file] = h5py.File(file, 'r')
         
-        self.file_index: List[Dict] = []
+        # Index all sequences for split: 80% train, 10% validate, 10% test
         total_sequences = 0
-        
         for file_idx, file in enumerate(self.files):
-            logger.info(f"Indexing file: {file}")
-            data = np.load(file)
-            for key in data.keys():
-                if data[key].dtype == np.dtype('|S1'):
-                    seq_count = len(data[key])
+            h5f = self.h5_files[file]
+            for key in h5f.keys():
+                if h5f[key].dtype == np.dtype('|S1'):
+                    seq_count = len(h5f[key])
                     total_sequences += seq_count
                     self.file_index.append({
                         'file_path': file,
@@ -94,11 +100,7 @@ class DNADataset(Dataset):
         
         if not self.file_index:
             raise ValueError(f"No DNA sequences found in {data_dir}")
-            
-        # Calculate split indices based on total count
-        logger.info(f"Total sequences indexed: {total_sequences}")
-        
-        # Use fixed split ratios: 80% train, 10% valid, 10% test
+
         train_size = int(0.8 * total_sequences)
         valid_size = int(0.1 * total_sequences)
         
@@ -106,20 +108,16 @@ class DNADataset(Dataset):
             self.start_idx = 0
             self.end_idx = train_size - 1
             logger.info(f"Using sequences 0-{self.end_idx} for training")
-        elif split == "valid":
+        elif split == "val":
             self.start_idx = train_size
             self.end_idx = train_size + valid_size - 1
             logger.info(f"Using sequences {self.start_idx}-{self.end_idx} for validation")
-        else:  # test
+        else:
             self.start_idx = train_size + valid_size
             self.end_idx = total_sequences - 1
             logger.info(f"Using sequences {self.start_idx}-{self.end_idx} for testing")
             
         self.length = self.end_idx - self.start_idx + 1
-        
-        # Cache for frequently accessed files
-        self.cache = {}
-        self.max_cache_size = 5
     
     def __len__(self):
         return self.length
@@ -132,61 +130,28 @@ class DNADataset(Dataset):
                 return file_info, real_idx - file_info['start_idx']
         raise IndexError(f"Index {idx} out of bounds")
     
-    def _load_file(self, file_path, key):
-        """Load a file, with caching"""
-        cache_key = f"{file_path}:{key}"
-        if cache_key not in self.cache:
-            # If cache is full, remove the least recently used item
-            if len(self.cache) >= self.max_cache_size:
-                # Remove first item (least recently used)
-                self.cache.pop(next(iter(self.cache)))
-            
-            # Load the file
-            data = np.load(file_path)
-            self.cache[cache_key] = data[key]
-            
-        return self.cache[cache_key]
-    
     def __getitem__(self, idx) -> Tuple[torch.Tensor, torch.Tensor]:
-        start_time = time.time()
-        
         if idx >= self.length:
             raise IndexError(f"Index {idx} out of range for dataset of length {self.length}")
         
         # Find which file contains this sequence
         file_info, seq_idx = self._find_file_info(idx)
         
-        file_find_time = time.time() - start_time
-        start_time = time.time()
-        
-        # Load the sequence
-        sequences = self._load_file(file_info['file_path'], file_info['key'])
-        seq = sequences[seq_idx]
-        
-        file_load_time = time.time() - start_time
-        start_time = time.time()
+        # Load the sequence using memory mapping
+        h5f = self.h5_files[file_info['file_path']]
+        seq = h5f[file_info['key']][seq_idx]
         
         # Convert to one-hot
-        # Ensure seq is a numpy array, not a bytes object
-        if isinstance(seq, bytes):
-            seq = np.array([s for s in seq], dtype='S1')
-            
         one_hot = self.encoder.encode(seq)
-        
-        # Make sure one_hot is a proper numpy array
-        if isinstance(one_hot, list):
-            one_hot = np.array(one_hot)
-            
         labels = np.argmax(one_hot, axis=0)
         
-        # Convert to tensors - ensure correct dimensions (C, L)
+        # Convert to tensors
         one_hot_tensor = torch.from_numpy(one_hot).float()
         labels_tensor = torch.from_numpy(labels).long()
         
-        encoding_time = time.time() - start_time
-        
-        # Print times occasionally
-        if idx % 1000 == 0:
-            print(f"Item {idx}: Find={file_find_time:.4f}s, Load={file_load_time:.4f}s, Encode={encoding_time:.4f}s")
-        
         return one_hot_tensor, labels_tensor
+    
+    def __del__(self):
+        """Close all HDF5 files when the dataset is deleted"""
+        for h5f in self.h5_files.values():
+            h5f.close()

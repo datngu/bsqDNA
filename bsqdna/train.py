@@ -1,8 +1,5 @@
-import inspect
 from datetime import datetime
 from pathlib import Path
-import time
-
 import torch
 
 # Enable Tensor Core operations for better performance on CUDA devices
@@ -13,16 +10,31 @@ from .data import create_dataloader
 
 DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
-
-def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, data_dir: str = "test_data"):
+def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 2048, data_dir: str = "test_data_h5"):
+    """
+    Train the BSQDNA model
+    
+    Args:
+        epochs: Number of training epochs
+        batch_size: Training batch size (smaller, limited by GPU memory for training)
+        val_batch_size: Validation batch size (larger, can be 2-4x training batch size)
+        data_dir: Directory containing the training data
+    """
     import lightning as L
-    from lightning.pytorch.loggers import TensorBoardLogger
+    from lightning.pytorch.loggers import WandbLogger
     import logging
-    from lightning.pytorch.profilers import PyTorchProfiler
+    import torch.cuda as cuda
+    import wandb
 
     # Set up logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+
+    # Log GPU memory info
+    if cuda.is_available():
+        logger.info(f"GPU: {cuda.get_device_name(0)}")
+        logger.info(f"Total GPU Memory: {cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        logger.info(f"Using batch size: {batch_size}")
 
     class PatchTrainer(L.LightningModule):
         def __init__(self, model):
@@ -44,7 +56,6 @@ def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, d
             return loss + sum(additional_losses.values())
 
         def validation_step(self, batch, batch_idx):
-            logger.info(f"Starting validation step {batch_idx}")
             x, _ = batch
             with torch.no_grad():
                 x_hat, additional_losses = self.model(x)
@@ -53,11 +64,14 @@ def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, d
             for k, v in additional_losses.items():
                 self.log(f"validation/{k}", v)
             if batch_idx == 0:
-                self.logger.experiment.add_text(
-                    "sample_reconstruction",
-                    f"Original vs Reconstructed (first 50 bases):\n{x[0,:,:50]}\n{x_hat[0,:,:50]}",
-                    self.global_step
-                )
+                # Log sample reconstructions to wandb
+                self.logger.experiment.log({
+                    "sample_reconstruction": wandb.Html(
+                        f"Original vs Reconstructed (first 50 bases):<br>"
+                        f"Original: {x[0,:,:50]}<br>"
+                        f"Reconstructed: {x_hat[0,:,:50]}"
+                    )
+                })
             return loss
 
         def configure_optimizers(self):
@@ -76,7 +90,7 @@ def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, d
         def val_dataloader(self):
             logger.info("Setting up validation dataloader")
             return create_dataloader(
-                self.data_dir, "valid", 
+                self.data_dir, "val",
                 batch_size=val_batch_size, 
                 num_workers=4, 
                 shuffle=False
@@ -99,37 +113,23 @@ def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, d
     l_model = PatchTrainer(model)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    logger.info("Setting up TensorBoard logger")
-    tb_logger = TensorBoardLogger("logs", name=f"{timestamp}_{model_name}")
-    
-    # Create the profiler
-    profiler = PyTorchProfiler(
-        activities=[
-            torch.profiler.ProfilerActivity.CPU,
-            torch.profiler.ProfilerActivity.CUDA,
-        ],
-        schedule=torch.profiler.schedule(
-            wait=1,
-            warmup=1,
-            active=3,
-            repeat=1
-        ),
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(f"logs/profiler"),
-        record_shapes=True,
-        profile_memory=True,
+    logger.info("Setting up Wandb logger")
+    wandb_logger = WandbLogger(
+        project="bsqDNA",
+        name=f"{timestamp}_{model_name}",
+        log_model="all"
     )
 
     logger.info("Creating trainer")
     trainer = L.Trainer(
         max_epochs=epochs, 
-        logger=tb_logger, 
+        logger=wandb_logger, 
         callbacks=[CheckPointer()],
         accelerator=DEVICE,
         devices=1,
         num_sanity_val_steps=2,
         deterministic=False,
         gradient_clip_val=1.0,
-        profiler=profiler,
     )
     
     try:
@@ -138,6 +138,8 @@ def train(epochs: int = 4, batch_size: int = 1024, val_batch_size: int = 1024, d
     except Exception as e:
         logger.error(f"Training failed with error: {str(e)}")
         raise
+    finally:
+        wandb.finish()
 
 
 if __name__ == "__main__":
